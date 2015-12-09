@@ -4,7 +4,7 @@ import java.util
 import io.prediction.controller.P2LAlgorithm
 import io.prediction.controller.Params
 import io.prediction.data
-import io.prediction.data.storage.{PropertyMap, Event}
+import io.prediction.data.storage.{DataMap, PropertyMap, Event}
 import io.prediction.data.store.LEventStore
 import org.apache.mahout.math.cf.SimilarityAnalysis
 import org.apache.mahout.sparkbindings.indexeddataset.IndexedDatasetSpark
@@ -504,33 +504,54 @@ class URAlgorithm(val ap: URAlgorithmParams)
   def getBiasedRecentUserActions(
     query: Query): (Seq[BoostableCorrelators], List[Event]) = {
 
-    val recentEvents = try {
-      LEventStore.findByEntity(
-        appName = ap.appName,
-        // entityType and entityId is specified for fast lookup
-        entityType = "user",
-        entityId = query.user.get,
-        // one query per eventName is not ideal, maybe one query for lots of events then split by eventName
-        //eventNames = Some(Seq(action)),// get all and separate later
-        targetEntityType = None,
-        // limit = Some(maxQueryEvents), // this will get all history then each action can be limited before using in
-        // the query
-        latest = true,
-        // set time limit to avoid super long DB access
-        timeout = Duration(200, "millis")
-      ).toList
-    } catch {
-      case e: scala.concurrent.TimeoutException =>
-        logger.error(s"Timeout when read recent events." +
-          s" Empty list is used. ${e}")
-        List.empty[Event]
-      case e: NoSuchElementException => // todo: bad form to use an exception to check if there is a user id
-        logger.info("No user id for recs, returning similar items for the item specified")
-        List.empty[Event]
-      case e: Exception => // fatal because of error, an empty query
-        logger.error(s"Error when read recent events: ${e}")
-        throw e
-    }
+    val recentEvents =
+      if (query.userItems.isDefined) {
+        logger.info("Using user items")
+        query.userItems.get.map((item: String) => {
+          Event(
+            Some(s"userItem-generated-${item}"),
+            ap.eventNames.head, //
+            "user",
+            "userItem-generated", //will have to be something that doesn't exist
+            Some("item"),
+            Some(item),
+            DataMap(),
+            DateTime.now(),
+            None.toList,
+            None,
+            DateTime.now())
+        })
+      } else {
+        logger.info("Using user id")
+        try {
+          LEventStore.findByEntity(
+            appName = ap.appName,
+            // entityType and entityId is specified for fast lookup
+            entityType = "user",
+            entityId = query.user.get,
+            // one query per eventName is not ideal, maybe one query for lots of events then split by eventName
+            //eventNames = Some(Seq(action)),// get all and separate later
+            targetEntityType = None,
+            // limit = Some(maxQueryEvents), // this will get all history then each action can be limited before using in
+            // the query
+            latest = true,
+            // set time limit to avoid super long DB access
+            timeout = Duration(200, "millis")
+          ).toList
+        } catch {
+          case e: scala.concurrent.TimeoutException =>
+            logger.error(s"Timeout when read recent events." +
+              s" Empty list is used. ${e}")
+            List.empty[Event]
+          case e: NoSuchElementException => // todo: bad form to use an exception to check if there is a user id
+            logger.info("No user id for recs, returning similar items for the item specified")
+            List.empty[Event]
+          case e: Exception => // fatal because of error, an empty query
+            logger.error(s"Error when read recent events: ${e}")
+            throw e
+        }
+      }
+
 
     val userEventBias = query.userBias.getOrElse(ap.userBias.getOrElse(1f))
     val userEventsBoost = if (userEventBias > 0 && userEventBias != 1) Some(userEventBias) else None
